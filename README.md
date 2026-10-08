@@ -27,7 +27,18 @@ xcrun devicectl device install app --device 00008130-001A029A3640001C build/Buil
 - Braucht die Metal-Toolchain (`xcodebuild -downloadComponent MetalToolchain`).
 - Mac merkt sich die letzten Einstellungen und spielt sie beim Verbinden zurück aufs iPhone.
 
+## Stresstest
+`swiftc -O tools/stress/main.swift Shared/Wire.swift Shared/CameraModel.swift -o build/stress && build/stress 0.5`
+(ProCam Studio vorher beenden, iPhone-App offen.) Fährt jedes Objektiv × Format × fps × Log/HDR und alle
+Regler über ihre Grenzen; meldet Abstürze, abgelehnte Werte und Stufen ohne Bild samt Pipeline-Zählern.
+
+## Gelernt
+- AVFoundation wirft NSExceptions bei ungültigen Werten → alle Geräte-Aufrufe über `ObjCTry` (`safely`).
+- Messwerte nie vom Main-Thread lesen, während die Session umkonfiguriert → nur auf `sessionQueue`.
+- VideoToolbox-Encoder kann in EncodeFrame dauerhaft hängen (4K-Wechsel, war mit MaxFrameDelayCount=1) → `EncoderHost` mit Wächter.
+- Apple Log gibt es auf dem 15 Pro nur als 10-Bit **4:2:2** (`x422`), nicht als `x420`.
+
 ## Stand (08.10.2026)
 Getestet: Verbindung, Live-Bild 1080p30 HEVC, Objektiverkennung, Automatik-Werte, Scopes.
-Noch nicht getestet: virtuelle Kamera (Freigabe nötig), manuelle Regler am Gerät, Apple Log, LUT, Blur.
+Stresstest grün (306 Schritte, inkl. Apple Log, Blur, alle Regler). Noch nicht getestet: virtuelle Kamera (Freigabe nötig), LUT-Datei.
 Offen: USB-Verbindung, Ton (virtuelles Mikrofon), Windows-Version.
