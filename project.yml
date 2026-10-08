@@ -50,6 +50,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: de.procam.iphone
+        SWIFT_OBJC_BRIDGING_HEADER: iOS/ObjC/ProCam-Bridging-Header.h
         TARGETED_DEVICE_FAMILY: "1"
 
   # ─── Mac: the control room ────────────────────────────────────────────

@@ -1,4 +1,5 @@
 import CoreMedia
+import QuartzCore
 import VideoToolbox
 
 /// Hardware HEVC/H.264 encoder tuned for latency, not for archiving.
@@ -17,6 +18,7 @@ final class VideoEncoder {
 
     var onFrame: ((Frame) -> Void)?
     var onFormat: ((VideoFormat) -> Void)?
+    var onEncodeError: (() -> Void)?
 
     private var session: VTCompressionSession?
     private let lock = NSLock()
@@ -63,7 +65,9 @@ final class VideoEncoder {
         set(s, kVTCompressionPropertyKey_AllowFrameReordering, false)
         set(s, kVTCompressionPropertyKey_ProfileLevel,
             codec == .hevc ? kVTProfileLevel_HEVC_Main_AutoLevel : kVTProfileLevel_H264_High_AutoLevel)
-        set(s, kVTCompressionPropertyKey_MaxFrameDelayCount, 1)
+        // No MaxFrameDelayCount: forcing it to 1 made the 4K HEVC encoder
+        // block forever in EncodeFrame after some format switches. RealTime
+        // without reordering already keeps the delay at about one frame.
         set(s, kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, true)
         set(s, kVTCompressionPropertyKey_MaximizePowerEfficiency, false)
         set(s, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 2.0)
@@ -104,9 +108,10 @@ final class VideoEncoder {
 
         let props: CFDictionary? = force
             ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary : nil
-        VTCompressionSessionEncodeFrame(s, imageBuffer: pb, presentationTimeStamp: pts,
-                                        duration: .invalid, frameProperties: props,
-                                        sourceFrameRefcon: nil, infoFlagsOut: nil)
+        let status = VTCompressionSessionEncodeFrame(
+            s, imageBuffer: pb, presentationTimeStamp: pts, duration: .invalid,
+            frameProperties: props, sourceFrameRefcon: nil, infoFlagsOut: nil)
+        if status != noErr { onEncodeError?() }
     }
 
     fileprivate func handle(_ sb: CMSampleBuffer) {
@@ -191,4 +196,83 @@ private func encoderCallback(refcon: UnsafeMutableRawPointer?, frameRefcon: Unsa
                              status: OSStatus, flags: VTEncodeInfoFlags, sb: CMSampleBuffer?) {
     guard status == noErr, let refcon, let sb, !flags.contains(.frameDropped) else { return }
     Unmanaged<VideoEncoder>.fromOpaque(refcon).takeUnretainedValue().handle(sb)
+}
+
+/// Runs the encoder off the camera thread and replaces it if it hangs.
+///
+/// VideoToolbox can block inside EncodeFrame indefinitely (seen on 4K format
+/// switches). On the camera thread that froze the whole camera. Here a hung
+/// encoder is abandoned after a second and a fresh one takes over; frames
+/// arriving while an encode is still running are dropped, never queued.
+final class EncoderHost {
+    var onFrame: ((VideoEncoder.Frame) -> Void)?
+    var onFormat: ((VideoFormat) -> Void)?
+    var onEncodeError: (() -> Void)?
+
+    private let lock = NSLock()
+    private var current: VideoEncoder!
+    private var busySince: CFTimeInterval?
+    /// Hung encoders are kept alive but never touched again: invalidating
+    /// one would block just like the call that hung.
+    private var abandoned: [VideoEncoder] = []
+    private(set) var resets = 0
+    private(set) var busyDrops = 0
+    private let queue = DispatchQueue(label: "procam.encode", qos: .userInteractive,
+                                      attributes: .concurrent)
+
+    init() { current = make() }
+
+    private func make() -> VideoEncoder {
+        let enc = VideoEncoder()
+        enc.onFrame = { [weak self, weak enc] f in
+            guard let self, let enc, self.isCurrent(enc) else { return }
+            self.onFrame?(f)
+        }
+        enc.onFormat = { [weak self, weak enc] f in
+            guard let self, let enc, self.isCurrent(enc) else { return }
+            self.onFormat?(f)
+        }
+        enc.onEncodeError = { [weak self] in self?.onEncodeError?() }
+        return enc
+    }
+
+    private func isCurrent(_ enc: VideoEncoder) -> Bool {
+        lock.withLock { current === enc }
+    }
+
+    func submit(_ pb: CVPixelBuffer, pts: CMTime, settings s: CameraSettings) {
+        lock.lock()
+        if let since = busySince {
+            if CACurrentMediaTime() - since > 1.0 {
+                abandoned.append(current)
+                if abandoned.count > 4 { abandoned.removeFirst() }
+                current = make()
+                busySince = nil
+                resets += 1
+            } else {
+                busyDrops += 1
+                lock.unlock()
+                return
+            }
+        }
+        let enc: VideoEncoder = current
+        busySince = CACurrentMediaTime()
+        lock.unlock()
+
+        queue.async { [weak self] in
+            enc.ensure(codec: s.codec, width: CVPixelBufferGetWidth(pb),
+                       height: CVPixelBufferGetHeight(pb), fps: s.fps, bitrateMbps: s.bitrateMbps)
+            enc.encode(pb, pts: pts)
+            guard let self else { return }
+            self.lock.withLock { if self.current === enc { self.busySince = nil } }
+        }
+    }
+
+    func requestKeyframe() {
+        lock.withLock { current }.requestKeyframe()
+    }
+
+    var debugState: String {
+        lock.withLock { "encResets=\(resets) encBusyDrop=\(busyDrops)" }
+    }
 }

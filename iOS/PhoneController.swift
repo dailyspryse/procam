@@ -25,10 +25,12 @@ final class PhoneController: ObservableObject {
 
     private let camera = CameraEngine()
     private let renderer = GradeRenderer()
-    private let encoder = VideoEncoder()
+    private let encoder = EncoderHost()
     private let server = StreamServer()
 
     private var lutName: String?
+    private let counters = PipelineCounters()
+    private lazy var diagnostics = camera.diagnostics()
     private var statusTimer: Timer?
     private var processingMs: Double = 0
     private let processingLock = NSLock()
@@ -51,7 +53,10 @@ final class PhoneController: ObservableObject {
         let camera = self.camera
         let renderer = self.renderer
 
-        encoder.onFrame = { server.sendFrame($0) }
+        encoder.onFrame = { [counters] in
+            counters.bump(\.encoded)
+            server.sendFrame($0)
+        }
         encoder.onFormat = { server.sendFormat($0) }
 
         server.onNeedKeyframe = { encoder.requestKeyframe() }
@@ -62,18 +67,24 @@ final class PhoneController: ObservableObject {
             Task { @MainActor in self?.clientName = name }
         }
 
+        let counters = self.counters
+        encoder.onEncodeError = { counters.bump(\.encodeErrors) }
         camera.onFrame = { [weak self] pb, pts in
+            counters.bump(\.camera)
+            defer { counters.stage("idle") }
             // No viewer, no work: the GPU and encoder stay idle and the phone cool.
             guard server.isConnected else { return }
             let s = camera.settings
             let t0 = CACurrentMediaTime()
-            guard let graded = renderer?.process(pb, settings: s) else { return }
+            counters.stage("gpu")
+            guard let graded = renderer?.process(pb, settings: s) else {
+                counters.bump(\.renderFailed)
+                return
+            }
+            counters.bump(\.rendered)
             let ms = (CACurrentMediaTime() - t0) * 1000
             self?.processingLock.withLock { self?.processingMs = ms }
-            encoder.ensure(codec: s.codec, width: CVPixelBufferGetWidth(graded),
-                           height: CVPixelBufferGetHeight(graded), fps: s.fps,
-                           bitrateMbps: s.bitrateMbps)
-            encoder.encode(graded, pts: pts)
+            encoder.submit(graded, pts: pts, settings: s)
         }
 
         camera.start()
@@ -122,7 +133,9 @@ final class PhoneController: ObservableObject {
             ranges: camera.ranges,
             readings: r,
             lutName: lutName,
-            error: camera.lastError))
+            error: camera.lastError,
+            diagnostics: diagnostics,
+            pipeline: counters.summary() + " " + encoder.debugState + " " + server.debugState()))
     }
 
     private func handle(_ cmd: Command) {
@@ -147,5 +160,31 @@ final class PhoneController: ObservableObject {
         case .requestKeyframe:
             encoder.requestKeyframe()
         }
+    }
+}
+
+/// Frame counts per pipeline stage, written from the video and encoder
+/// threads and read by the status timer.
+final class PipelineCounters {
+    struct Values {
+        var camera = 0, rendered = 0, renderFailed = 0, encoded = 0, encodeErrors = 0
+    }
+    private let lock = NSLock()
+    private var v = Values()
+    private var currentStage = "idle"
+    private var stageSince = CACurrentMediaTime()
+
+    func stage(_ name: String) {
+        lock.withLock { currentStage = name; stageSince = CACurrentMediaTime() }
+    }
+
+    func bump(_ kp: WritableKeyPath<Values, Int>) {
+        lock.withLock { v[keyPath: kp] += 1 }
+    }
+
+    func summary() -> String {
+        let (c, st, since) = lock.withLock { (v, currentStage, stageSince) }
+        let age = Int((CACurrentMediaTime() - since) * 1000)
+        return "stage=\(st)(\(age)ms) cam=\(c.camera) gpu=\(c.rendered) gpuFail=\(c.renderFailed) enc=\(c.encoded) encErr=\(c.encodeErrors)"
     }
 }

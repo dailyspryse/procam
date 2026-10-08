@@ -167,4 +167,8 @@ struct CameraStatus: Codable {
     var readings: CameraReadings
     var lutName: String?
     var error: String?
+    /// Free-form capability dump for debugging tools; the Studio ignores it.
+    var diagnostics: String?
+    /// Per-stage frame counters since start, for finding stalls.
+    var pipeline: String?
 }

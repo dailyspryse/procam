@@ -89,58 +89,112 @@ final class CameraEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             || old.appleLog != new.appleLog
             || old.hdr != new.hdr
 
-        session.beginConfiguration()
-        defer { session.commitConfiguration() }
+        let geometryChanged = old.rotation != new.rotation || old.mirror != new.mirror
+            || old.stabilization != new.stabilization
 
-        if needsRebuild {
-            if input?.device != dev {
-                if let input { session.removeInput(input) }
-                do {
-                    let newInput = try AVCaptureDeviceInput(device: dev)
-                    guard session.canAddInput(newInput) else {
-                        setError("Kamera kann nicht verwendet werden")
-                        return
-                    }
-                    session.addInput(newInput)
-                    input = newInput
-                    device = dev
-                } catch {
-                    setError("Kamera-Fehler: \(error.localizedDescription)")
-                    return
-                }
-            }
-            guard let format = findFormat(dev, new) else {
-                setError("Kein passendes Format für \(new.width)×\(new.height) @ \(Int(new.fps))")
-                return
-            }
+        // Session reconfiguration is expensive and can stall frames, so it
+        // only happens for changes that need it. Slider drags (ISO, focus,
+        // zoom …) go straight to the device below.
+        if needsRebuild || geometryChanged {
+            session.beginConfiguration()
+            let ok = needsRebuild ? rebuild(dev, &new) : true
+            if ok { configureConnection(new) }
+            session.commitConfiguration()
+            guard ok else { return }
+        }
+
+        applyDeviceControls(dev, &new)
+
+        lock.withLock {
+            _settings = new
+            _ranges = Self.ranges(for: dev)
+            _error = nil
+        }
+    }
+
+    /// Runs one AVFoundation mutation. AVFoundation raises an NSException for
+    /// a value it rejects, which would otherwise kill the app.
+    @discardableResult
+    private func safely(_ what: String, _ block: () -> Void) -> Bool {
+        if let reason = ObjCTry.run(block) {
+            setError("\(what) abgelehnt: \(reason)")
+            return false
+        }
+        return true
+    }
+
+    private func rebuild(_ dev: AVCaptureDevice, _ new: inout CameraSettings) -> Bool {
+        if input?.device != dev {
+            if let input { session.removeInput(input) }
             do {
-                try dev.lockForConfiguration()
-                dev.activeFormat = format
-                let duration = CMTime(value: 1000, timescale: CMTimeScale(new.fps * 1000))
-                dev.activeVideoMinFrameDuration = duration
-                dev.activeVideoMaxFrameDuration = duration
-                if new.appleLog {
-                    dev.activeColorSpace = .appleLog
-                } else if format.supportedColorSpaces.contains(.sRGB) {
-                    dev.activeColorSpace = .sRGB
+                let newInput = try AVCaptureDeviceInput(device: dev)
+                guard session.canAddInput(newInput) else {
+                    setError("Kamera kann nicht verwendet werden")
+                    // Put the previous camera back rather than leave none.
+                    if let input, session.canAddInput(input) { session.addInput(input) }
+                    return false
                 }
-                if format.isVideoHDRSupported {
-                    dev.automaticallyAdjustsVideoHDREnabled = false
-                    dev.isVideoHDREnabled = new.hdr
-                }
-                dev.unlockForConfiguration()
+                session.addInput(newInput)
+                input = newInput
+                device = dev
             } catch {
-                setError("Format konnte nicht gesetzt werden")
-                return
+                setError("Kamera-Fehler: \(error.localizedDescription)")
+                if let input, session.canAddInput(input) { session.addInput(input) }
+                return false
             }
-            let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+        }
+        // Not every lens offers every rate (25 fps is often missing); fall
+        // back to 30 instead of leaving the camera without a format.
+        var format = findFormat(dev, new)
+        if format == nil, new.fps != 30 {
+            var fallback = new
+            fallback.fps = 30
+            if let f = findFormat(dev, fallback) {
+                format = f
+                new.fps = 30
+            }
+        }
+        guard let format else {
+            setError("Kein passendes Format für \(new.width)×\(new.height) @ \(Int(new.fps))")
+            return false
+        }
+        guard (try? dev.lockForConfiguration()) != nil else {
+            setError("Kamera ist belegt")
+            return false
+        }
+        let fps = new.fps
+        let log = new.appleLog
+        let hdr = new.hdr
+        let ok = safely("Format") {
+            dev.activeFormat = format
+            let duration = CMTime(value: 1000, timescale: CMTimeScale(fps * 1000))
+            dev.activeVideoMinFrameDuration = duration
+            dev.activeVideoMaxFrameDuration = duration
+            if log {
+                dev.activeColorSpace = .appleLog
+            } else if format.supportedColorSpaces.contains(.sRGB) {
+                dev.activeColorSpace = .sRGB
+            }
+            if format.isVideoHDRSupported {
+                dev.automaticallyAdjustsVideoHDREnabled = false
+                dev.isVideoHDREnabled = hdr
+            }
+        }
+        dev.unlockForConfiguration()
+        guard ok else { return false }
+
+        let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+        return safely("Ausgabeformat") {
             output.videoSettings = [
                 kCVPixelBufferPixelFormatTypeKey as String: subtype,
                 kCVPixelBufferMetalCompatibilityKey as String: true,
             ]
         }
+    }
 
-        if let conn = output.connection(with: .video) {
+    private func configureConnection(_ new: CameraSettings) {
+        guard let conn = output.connection(with: .video) else { return }
+        safely("Bildausrichtung") {
             if conn.isVideoRotationAngleSupported(CGFloat(new.rotation)) {
                 conn.videoRotationAngle = CGFloat(new.rotation)
             }
@@ -154,14 +208,6 @@ final class CameraEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                 conn.preferredVideoStabilizationMode = new.stabilization ? .standard : .off
             }
         }
-
-        applyDeviceControls(dev, &new)
-
-        lock.withLock {
-            _settings = new
-            _ranges = Self.ranges(for: dev)
-            _error = nil
-        }
     }
 
     private func applyDeviceControls(_ dev: AVCaptureDevice, _ s: inout CameraSettings) {
@@ -173,45 +219,54 @@ final class CameraEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         switch s.exposureMode {
         case .auto:
             if dev.isExposureModeSupported(.continuousAutoExposure) {
-                dev.exposureMode = .continuousAutoExposure
+                safely("Belichtung") { dev.exposureMode = .continuousAutoExposure }
             }
         case .locked:
-            if dev.isExposureModeSupported(.locked) { dev.exposureMode = .locked }
+            if dev.isExposureModeSupported(.locked) {
+                safely("Belichtung") { dev.exposureMode = .locked }
+            }
         case .manual:
             if dev.isExposureModeSupported(.custom) {
                 s.iso = s.iso.clamped(fmt.minISO, fmt.maxISO)
                 // The shutter can never be longer than one frame.
                 let maxShutter = min(fmt.maxExposureDuration.seconds, 1.0 / s.fps)
                 s.shutter = s.shutter.clamped(fmt.minExposureDuration.seconds, maxShutter)
-                let duration = CMTime(seconds: s.shutter, preferredTimescale: 1_000_000)
-                dev.setExposureModeCustom(duration: duration, iso: s.iso)
+                // Round down to whole microseconds so rounding can never push
+                // the duration past the format's limits.
+                var duration = CMTime(value: CMTimeValue(s.shutter * 1_000_000), timescale: 1_000_000)
+                duration = CMTimeClampToRange(duration, range: CMTimeRange(
+                    start: fmt.minExposureDuration,
+                    end: min(fmt.maxExposureDuration, CMTime(seconds: maxShutter, preferredTimescale: 1_000_000))))
+                let iso = s.iso
+                safely("Manuelle Belichtung") { dev.setExposureModeCustom(duration: duration, iso: iso, completionHandler: nil) }
             }
         }
         s.exposureBias = s.exposureBias.clamped(dev.minExposureTargetBias, dev.maxExposureTargetBias)
         if s.exposureMode != .manual {
-            dev.setExposureTargetBias(s.exposureBias)
+            let bias = s.exposureBias
+            safely("Belichtungskorrektur") { dev.setExposureTargetBias(bias, completionHandler: nil) }
         }
 
         // White balance
         switch s.whiteBalanceMode {
         case .auto:
             if dev.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
-                dev.whiteBalanceMode = .continuousAutoWhiteBalance
+                safely("Weißabgleich") { dev.whiteBalanceMode = .continuousAutoWhiteBalance }
             }
         case .locked:
-            if dev.isWhiteBalanceModeSupported(.locked) { dev.whiteBalanceMode = .locked }
+            if dev.isWhiteBalanceModeSupported(.locked) {
+                safely("Weißabgleich") { dev.whiteBalanceMode = .locked }
+            }
         case .manual:
             if dev.isLockingWhiteBalanceWithCustomDeviceGainsSupported {
                 s.temperature = s.temperature.clamped(2000, 10000)
                 s.tint = s.tint.clamped(-150, 150)
                 let tt = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(
                     temperature: s.temperature, tint: s.tint)
-                var gains = dev.deviceWhiteBalanceGains(for: tt)
-                let maxGain = dev.maxWhiteBalanceGain
-                gains.redGain = gains.redGain.clamped(1, maxGain)
-                gains.greenGain = gains.greenGain.clamped(1, maxGain)
-                gains.blueGain = gains.blueGain.clamped(1, maxGain)
-                dev.setWhiteBalanceModeLocked(with: gains)
+                safely("Weißabgleich") {
+                    let gains = Self.clampedGains(dev.deviceWhiteBalanceGains(for: tt), dev)
+                    dev.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
+                }
             }
         }
 
@@ -219,14 +274,19 @@ final class CameraEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         switch s.focusMode {
         case .auto:
             if dev.isFocusModeSupported(.continuousAutoFocus) {
-                dev.focusMode = .continuousAutoFocus
+                safely("Fokus") { dev.focusMode = .continuousAutoFocus }
             }
         case .locked:
-            if dev.isFocusModeSupported(.locked) { dev.focusMode = .locked }
+            if dev.isFocusModeSupported(.locked) {
+                safely("Fokus") { dev.focusMode = .locked }
+            }
         case .manual:
             if dev.isLockingFocusWithCustomLensPositionSupported {
                 s.lensPosition = s.lensPosition.clamped(0, 1)
-                dev.setFocusModeLocked(lensPosition: s.lensPosition)
+                let pos = s.lensPosition
+                safely("Manueller Fokus") { dev.setFocusModeLocked(lensPosition: pos, completionHandler: nil) }
+            } else {
+                s.focusMode = .auto
             }
         }
 
@@ -234,19 +294,31 @@ final class CameraEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         s.zoom = s.zoom.clamped(Double(dev.minAvailableVideoZoomFactor),
                                 min(Double(dev.maxAvailableVideoZoomFactor), 30))
         if abs(Double(dev.videoZoomFactor) - s.zoom) > 0.001 {
-            dev.videoZoomFactor = CGFloat(s.zoom)
+            let z = CGFloat(s.zoom)
+            safely("Zoom") { dev.videoZoomFactor = z }
         }
 
-        // Torch
-        if dev.hasTorch {
-            if s.torch > 0.01 {
-                try? dev.setTorchModeOn(level: min(s.torch, AVCaptureDevice.maxAvailableTorchLevel))
+        // Torch. The available level drops to 0 when the phone is hot;
+        // asking for "on" then raises.
+        if dev.hasTorch, dev.isTorchAvailable {
+            let level = min(s.torch, AVCaptureDevice.maxAvailableTorchLevel)
+            if level > 0.01 {
+                safely("Licht") { try? dev.setTorchModeOn(level: level) }
             } else if dev.torchMode != .off {
-                dev.torchMode = .off
+                safely("Licht") { dev.torchMode = .off }
             }
         } else {
             s.torch = 0
         }
+    }
+
+    private static func clampedGains(_ g: AVCaptureDevice.WhiteBalanceGains,
+                                     _ dev: AVCaptureDevice) -> AVCaptureDevice.WhiteBalanceGains {
+        let maxGain = dev.maxWhiteBalanceGain
+        return AVCaptureDevice.WhiteBalanceGains(
+            redGain: g.redGain.clamped(1, maxGain),
+            greenGain: g.greenGain.clamped(1, maxGain),
+            blueGain: g.blueGain.clamped(1, maxGain))
     }
 
     // MARK: Points of interest
@@ -255,6 +327,7 @@ final class CameraEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     /// the sensor-landscape space that points of interest are expressed in.
     private func devicePoint(x: Double, y: Double) -> CGPoint {
         let s = settings
+        let x = x.clamped(0, 1), y = y.clamped(0, 1)
         let ux = s.mirror ? 1 - x : x
         switch s.rotation {
         case 90: return CGPoint(x: y, y: 1 - ux)
@@ -268,11 +341,16 @@ final class CameraEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         sessionQueue.async { [self] in
             guard let dev = device, dev.isFocusPointOfInterestSupported,
                   (try? dev.lockForConfiguration()) != nil else { return }
-            dev.focusPointOfInterest = devicePoint(x: x, y: y)
+            defer { dev.unlockForConfiguration() }
+            let point = devicePoint(x: x, y: y)
             // Tap-to-focus keeps tracking afterwards in auto mode, and does a
             // one-shot otherwise so a locked focus stays locked.
-            dev.focusMode = settings.focusMode == .auto ? .continuousAutoFocus : .autoFocus
-            dev.unlockForConfiguration()
+            let mode: AVCaptureDevice.FocusMode = settings.focusMode == .auto ? .continuousAutoFocus : .autoFocus
+            guard dev.isFocusModeSupported(mode) else { return }
+            safely("Fokuspunkt") {
+                dev.focusPointOfInterest = point
+                dev.focusMode = mode
+            }
         }
     }
 
@@ -281,26 +359,57 @@ final class CameraEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             guard let dev = device, dev.isExposurePointOfInterestSupported,
                   settings.exposureMode != .manual,
                   (try? dev.lockForConfiguration()) != nil else { return }
-            dev.exposurePointOfInterest = devicePoint(x: x, y: y)
-            dev.exposureMode = settings.exposureMode == .auto ? .continuousAutoExposure : .autoExpose
-            dev.unlockForConfiguration()
+            defer { dev.unlockForConfiguration() }
+            let point = devicePoint(x: x, y: y)
+            let mode: AVCaptureDevice.ExposureMode = settings.exposureMode == .auto ? .continuousAutoExposure : .autoExpose
+            guard dev.isExposureModeSupported(mode) else { return }
+            safely("Belichtungspunkt") {
+                dev.exposurePointOfInterest = point
+                dev.exposureMode = mode
+            }
         }
     }
 
     // MARK: Readings
 
+    private var _readings = CameraReadings()
+
+    /// Last readings. They are sampled on the session queue, where the
+    /// device is never mid-reconfiguration; reading a device from another
+    /// thread while its format or lens changes is what crashed before.
     func readings() -> CameraReadings {
-        var r = CameraReadings()
-        guard let dev = device else { return r }
-        r.iso = dev.iso
-        r.shutter = dev.exposureDuration.seconds
-        r.exposureOffset = dev.exposureTargetOffset
-        let tt = dev.temperatureAndTintValues(for: dev.deviceWhiteBalanceGains)
-        r.temperature = tt.temperature
-        r.tint = tt.tint
-        r.lensPosition = dev.lensPosition
-        r.zoom = Double(dev.videoZoomFactor)
-        return r
+        sessionQueue.async { [self] in
+            guard let dev = device else { return }
+            var r = CameraReadings()
+            r.iso = dev.iso
+            r.shutter = dev.exposureDuration.seconds
+            r.exposureOffset = dev.exposureTargetOffset
+            r.lensPosition = dev.lensPosition
+            r.zoom = Double(dev.videoZoomFactor)
+            ObjCTry.run {
+                let tt = dev.temperatureAndTintValues(for: Self.clampedGains(dev.deviceWhiteBalanceGains, dev))
+                r.temperature = tt.temperature
+                r.tint = tt.tint
+            }
+            lock.withLock { _readings = r }
+        }
+        return lock.withLock { _readings }
+    }
+
+    /// One line per lens: which pixel formats and colour spaces it offers.
+    func diagnostics() -> String {
+        lenses.map { lens in
+            guard let dev = AVCaptureDevice(uniqueID: lens.id) else { return lens.name }
+            var seen = Set<String>()
+            for f in dev.formats {
+                let d = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
+                let sub = CMFormatDescriptionGetMediaSubType(f.formatDescription)
+                let fourcc = String(bytes: [24, 16, 8, 0].map { UInt8((sub >> $0) & 0xff) }, encoding: .ascii) ?? "?"
+                let cs = f.supportedColorSpaces.map { "\($0.rawValue)" }.joined(separator: ",")
+                seen.insert("\(d.height)p \(fourcc) cs[\(cs)]")
+            }
+            return lens.name + ": " + seen.sorted().joined(separator: " ; ")
+        }.joined(separator: "\n")
     }
 
     // MARK: Frames
@@ -330,7 +439,17 @@ final class CameraEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
         kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
         kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+        // Apple Log is only offered as 10-bit 4:2:2 ('x422') on iPhone 15 Pro.
+        kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+        kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
     ]
+
+    static func isTenBit(_ sub: FourCharCode) -> Bool {
+        sub == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            || sub == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+            || sub == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
+            || sub == kCVPixelFormatType_422YpCbCr10BiPlanarFullRange
+    }
 
     private func findFormat(_ dev: AVCaptureDevice, _ s: CameraSettings) -> AVCaptureDevice.Format? {
         let candidates = dev.formats.filter { f in
@@ -338,7 +457,7 @@ final class CameraEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             let sub = CMFormatDescriptionGetMediaSubType(f.formatDescription)
             guard Int(dims.width) == s.width, Int(dims.height) == s.height,
                   Self.acceptedSubtypes.contains(sub),
-                  f.videoSupportedFrameRateRanges.contains(where: { $0.maxFrameRate >= s.fps - 0.01 })
+                  f.videoSupportedFrameRateRanges.contains(where: { $0.minFrameRate <= s.fps + 0.01 && $0.maxFrameRate >= s.fps - 0.01 })
             else { return false }
             if s.appleLog && !f.supportedColorSpaces.contains(.appleLog) { return false }
             if s.hdr && !f.isVideoHDRSupported { return false }
@@ -351,12 +470,12 @@ final class CameraEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
 
     private func score(_ f: AVCaptureDevice.Format, _ s: CameraSettings) -> Int {
         let sub = CMFormatDescriptionGetMediaSubType(f.formatDescription)
-        let tenBit = sub == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-            || sub == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+        let tenBit = Self.isTenBit(sub)
         var score = 0
         if s.appleLog == tenBit { score += 100 }
         if sub == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-            || sub == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange { score += 10 }
+            || sub == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            || sub == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange { score += 10 }
         if !f.isVideoBinned { score += 20 }
         if f.isVideoStabilizationModeSupported(.standard) { score += 5 }
         return score

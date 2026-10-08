@@ -128,10 +128,12 @@ final class GradeRenderer {
         let width = CVPixelBufferGetWidth(input)
         let height = CVPixelBufferGetHeight(input)
         let format = CVPixelBufferGetPixelFormatType(input)
-        let tenBit = format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-            || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+        // Chroma is sampled with normalised coordinates, so 4:2:0 and 4:2:2
+        // (Apple Log) need no separate path — only the bit depth matters.
+        let tenBit = CameraEngine.isTenBit(format)
         let fullRange = format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
             || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+            || format == kCVPixelFormatType_422YpCbCr10BiPlanarFullRange
 
         guard let luma = makeTexture(cache, input, plane: 0, format: tenBit ? .r16Unorm : .r8Unorm),
               let chroma = makeTexture(cache, input, plane: 1, format: tenBit ? .rg16Unorm : .rg8Unorm),

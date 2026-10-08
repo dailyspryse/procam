@@ -179,6 +179,7 @@ final class StreamServer {
             }
             waitingForKeyframe = false
             inFlight += 1
+            totalSent += 1
             let payload = VideoFramePayload.encode(ptsUs: f.ptsUs, keyframe: f.keyframe, sample: f.sample)
             send(WireMessage(type: .videoFrame, payload: payload), on: c) { [weak self] in
                 self?.queue.async { self?.inFlight -= 1 }
@@ -188,6 +189,12 @@ final class StreamServer {
                 sentBytes += payload.count
             }
         }
+    }
+
+    private var totalSent = 0
+
+    func debugState() -> String {
+        queue.sync { "sent=\(totalSent) inFlight=\(inFlight) waitKey=\(waitingForKeyframe) drop=\(droppedFrames)" }
     }
 
     /// Returns frames and bytes sent since the last call.
