@@ -1,0 +1,137 @@
+name: ProCam
+options:
+  bundleIdPrefix: de.procam
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    CODE_SIGN_STYLE: Automatic
+    # The certificate's name carries a different number; the team is this one.
+    DEVELOPMENT_TEAM: 8TV3YVJUTQ
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+# XcodeGen GENERATES Info.plist and .entitlements from `properties`.
+# A bare `path` silently overwrites anything written by hand (Beamer lesson),
+# so every key lives here.
+
+targets:
+
+  # ─── iPhone: the camera ───────────────────────────────────────────────
+  ProCam:
+    type: application
+    platform: iOS
+    sources:
+      - path: iOS
+      - path: Shared
+    info:
+      path: iOS/Info.plist
+      properties:
+        CFBundleDisplayName: ProCam
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSCameraUsageDescription: >-
+          ProCam nutzt die Kamera, um das Bild als Webcam an deinen Computer zu senden.
+        NSLocalNetworkUsageDescription: >-
+          ProCam wartet im lokalen Netzwerk auf ProCam Studio auf deinem Computer.
+        NSBonjourServices:
+          - _procam._tcp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.procam.iphone
+        TARGETED_DEVICE_FAMILY: "1"
+
+  # ─── Mac: the control room ────────────────────────────────────────────
+  ProCamStudio:
+    type: application
+    platform: macOS
+    sources:
+      - path: Mac
+      - path: MacShared
+      - path: Shared
+    info:
+      path: Mac/Info.plist
+      properties:
+        CFBundleDisplayName: ProCam Studio
+        CFBundleName: ProCam Studio
+        LSApplicationCategoryType: public.app-category.video
+        # macOS 15 needs both, or connecting hangs forever while browsing
+        # still appears to work (Beamer lesson).
+        NSLocalNetworkUsageDescription: >-
+          ProCam Studio sucht dein iPhone im lokalen Netzwerk.
+        NSBonjourServices:
+          - _procam._tcp
+        NSCameraUsageDescription: >-
+          ProCam Studio speist das iPhone-Bild in die virtuelle Kamera ein.
+        NSSystemExtensionUsageDescription: >-
+          Die Kamera-Erweiterung stellt das iPhone als Webcam für alle Apps bereit.
+    entitlements:
+      path: Mac/ProCamStudio.entitlements
+      properties:
+        com.apple.developer.system-extension.install: true
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)de.procam.studio.camera
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.procam.studio
+        PRODUCT_NAME: ProCam Studio
+        ENABLE_HARDENED_RUNTIME: YES
+    dependencies:
+      - target: ProCamCamera
+        embed: true
+        codeSign: true
+
+  # ─── Mac: CoreMediaIO camera extension (the virtual webcam) ───────────
+  ProCamCamera:
+    type: system-extension
+    platform: macOS
+    sources:
+      - path: CameraExtension
+      - path: MacShared
+    info:
+      path: CameraExtension/Info.plist
+      properties:
+        CFBundleDisplayName: ProCam Camera
+        CFBundleName: ProCam Camera
+        NSSystemExtensionUsageDescription: >-
+          Stellt das iPhone als Webcam für alle Apps bereit.
+        CMIOExtension:
+          # Must start with an app group the extension is entitled to.
+          CMIOExtensionMachServiceName: $(TeamIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)
+    entitlements:
+      path: CameraExtension/ProCamCamera.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)de.procam.studio.camera
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.procam.studio.camera
+        PRODUCT_NAME: de.procam.studio.camera
+        ENABLE_HARDENED_RUNTIME: YES
+        SKIP_INSTALL: YES
+
+schemes:
+  ProCam:
+    build:
+      targets:
+        ProCam: all
+    run:
+      config: Debug
+  ProCamStudio:
+    build:
+      targets:
+        ProCamStudio: all
+    run:
+      config: Debug
