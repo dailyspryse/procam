@@ -97,8 +97,9 @@ jobs:
             Write-Host ("{0}: RGB({1},{2},{3}) Abweichung {4}" -f $c.n, $px.R, $px.G, $px.B, $d)
             if ($d -gt 30) { $bad++ }
           }
+          $w = $img.Width; $h = $img.Height
           $img.Dispose()
-          if ($img.Width -ne 1920 -or $img.Height -ne 1080) { throw "Falsche Größe" }
+          if ($w -ne 1920 -or $h -ne 1080) { throw "Falsche Größe ${w}x${h}" }
           if ($bad -gt 0) { throw "$bad Farben falsch – Bild verdreht oder verfälscht?" }
           if ($app.ExitCode -ne 0) { throw "Selbsttest mit Webcam fehlgeschlagen ($($app.ExitCode))" }
           Start-Process regsvr32.exe -ArgumentList "/u", "/s", "`"$dll`"" -Wait
