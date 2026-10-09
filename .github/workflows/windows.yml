@@ -105,6 +105,8 @@ jobs:
           Start-Process regsvr32.exe -ArgumentList "/u", "/s", "`"$dll`"" -Wait
 
       - name: UI with a simulated iPhone
+        # Windows PowerShell 5.1: its .NET Framework has System.Drawing built in.
+        shell: powershell
         run: |
           # Fake phone replays the recorded stream on port 47800; the Studio
           # connects to it, then the window is captured with PrintWindow
@@ -117,7 +119,7 @@ jobs:
           Start-Sleep -Seconds 18
           if ($app.HasExited) { throw "App hat sich beendet (Code $($app.ExitCode))" }
           $app.Refresh()
-          Add-Type -ReferencedAssemblies System.Drawing, System.Drawing.Common, System.Drawing.Primitives -TypeDefinition @'
+          Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
           using System; using System.Drawing; using System.Runtime.InteropServices;
           public static class Shot {
             [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
