@@ -117,7 +117,7 @@ jobs:
           Start-Sleep -Seconds 18
           if ($app.HasExited) { throw "App hat sich beendet (Code $($app.ExitCode))" }
           $app.Refresh()
-          Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
+          Add-Type -ReferencedAssemblies System.Drawing, System.Drawing.Common, System.Drawing.Primitives -TypeDefinition @'
           using System; using System.Drawing; using System.Runtime.InteropServices;
           public static class Shot {
             [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
