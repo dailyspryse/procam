@@ -159,10 +159,17 @@ public sealed class PhoneLink : IDisposable
                 if (n <= 0) break;
                 _lastReceive = DateTime.UtcNow;
                 foreach (var m in parser.Feed(buffer.AsSpan(0, n)))
-                    Handle(m, phone);
+                {
+                    // One bad message must not drop the whole connection.
+                    try { Handle(m, phone); }
+                    catch (Exception e) { ErrorLog.Write($"Nachricht {m.Type}", e); }
+                }
             }
         }
-        catch { }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            ErrorLog.Write("Verbindung", e);
+        }
 
         lock (_gate)
         {

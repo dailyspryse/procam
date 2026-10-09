@@ -57,13 +57,19 @@ public sealed class App : Application
         return app.Run(window);
     }
 
-    public static void Log(Exception e)
+    public static void Log(Exception e) => ErrorLog.Write("UI", e);
+}
+
+/// %APPDATA%\ProCam\errors.log — CI fails the build if it is not empty.
+public static class ErrorLog
+{
+    public static void Write(string where, Exception e)
     {
         try
         {
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ProCam");
             Directory.CreateDirectory(dir);
-            File.AppendAllText(Path.Combine(dir, "errors.log"), $"{DateTime.Now:s} {e}\n\n");
+            File.AppendAllText(Path.Combine(dir, "errors.log"), $"{DateTime.Now:s} [{where}] {e}\n\n");
         }
         catch { }
     }

@@ -237,6 +237,8 @@ public static class SelfTest
             {
                 if (!listener.Pending()) { System.Threading.Thread.Sleep(50); continue; }
                 using var client = listener.AcceptTcpClient();
+                try
+                {
                 client.NoDelay = true;
                 var ns = client.GetStream();
                 log.AppendLine("Studio verbunden");
@@ -265,6 +267,8 @@ public static class SelfTest
                     }
                     System.Threading.Thread.Sleep(33);
                 }
+                }
+                catch (IOException e) { log.AppendLine("Studio getrennt: " + e.Message); }
             }
         }
         catch (Exception e) { log.AppendLine("Fehler: " + e.Message); }

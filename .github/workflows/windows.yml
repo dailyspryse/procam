@@ -125,6 +125,12 @@ jobs:
         env:
           PROCAM_VCAM: mf
         run: |
+          # Server images ship the camera services disabled; desktops have them on demand.
+          foreach ($svc in "FrameServer", "FrameServerMonitor") {
+            $s = Get-Service $svc -ErrorAction SilentlyContinue
+            if ($s) { Set-Service $svc -StartupType Manual; Start-Service $svc -ErrorAction SilentlyContinue }
+          }
+          Get-Service FrameServer, FrameServerMonitor -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType -AutoSize | Out-String | Write-Host
           $setup = Start-Process -FilePath publish/ProCamStudio.exe -ArgumentList "--install-vcam" -WorkingDirectory publish -Wait -PassThru
           Get-Content (Join-Path $env:TEMP "procam-vcam-setup.log")
           if ($setup.ExitCode -ne 0) {
