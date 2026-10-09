@@ -131,9 +131,18 @@ jobs:
             if ($s) { Set-Service $svc -StartupType Manual; Start-Service $svc -ErrorAction SilentlyContinue }
           }
           Get-Service FrameServer, FrameServerMonitor -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType -AutoSize | Out-String | Write-Host
+          # Diagnose: system-wide vs. per-session camera.
+          & publish/procam_vcamctl.exe install 2>&1 | Write-Host
+          & publish/procam_vcamctl.exe remove 2>&1 | Write-Host
           $setup = Start-Process -FilePath publish/ProCamStudio.exe -ArgumentList "--install-vcam" -WorkingDirectory publish -Wait -PassThru
           Get-Content (Join-Path $env:TEMP "procam-vcam-setup.log")
-          if ($setup.ExitCode -ne 0) {
+          $holder = Start-Process -FilePath publish/procam_vcamctl.exe -ArgumentList "run",$PID -PassThru `
+                      -RedirectStandardOutput session.txt -NoNewWindow
+          Start-Sleep -Seconds 4
+          Write-Host "--- Sitzungs-Kamera:"; Get-Content session.txt
+          $sessionOk = (Get-Content session.txt -Raw) -match "Start: 0x00000000"
+          if ($sessionOk) { Write-Host "Sitzungs-Kamera läuft" }
+          if (-not $sessionOk) {
             # Server SKUs may lack the Frame Server / MFCreateVirtualCamera.
             Write-Host "::warning::Media-Foundation-Kamera auf diesem Runner nicht einrichtbar (Code $($setup.ExitCode)) - nicht getestet"
             exit 0
