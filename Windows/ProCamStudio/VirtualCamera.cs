@@ -30,6 +30,25 @@ public sealed class VirtualCamera : IDisposable
     /// Must match CLSID_VCam in VirtualCamera/Source/dllmain.cpp.
     public const string MfClsid = "{7C1E4F2A-3B5D-4E8F-A6C2-9D0B1E2F3A4B}";
 
+    /// What apps list. Windows appends a suffix to MF virtual cameras.
+    public static string DisplayName => UseMediaFoundation ? DeviceName + " (Windows Virtual Camera)" : DeviceName;
+
+    /// Settings → Privacy → Camera → "Let desktop apps access your camera".
+    /// When off, Windows refuses to start the MF camera (access denied).
+    public static bool DesktopCameraAccessDenied
+    {
+        get
+        {
+            const string sub = @"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam";
+            static string? Read(RegistryKey root, string key)
+            {
+                try { using var k = root.OpenSubKey(key); return k?.GetValue("Value") as string; } catch { return null; }
+            }
+            return Read(Registry.LocalMachine, sub) == "Deny" || Read(Registry.CurrentUser, sub) == "Deny"
+                || Read(Registry.CurrentUser, sub + @"\NonPackaged") == "Deny";
+        }
+    }
+
     /// MF virtual cameras need Windows 11 (build 22000).
     /// PROCAM_VCAM=dshow|mf forces a backend (CI tests both on one machine).
     public static bool UseMediaFoundation =>

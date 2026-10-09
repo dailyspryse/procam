@@ -169,10 +169,17 @@ public sealed class MainWindow : Window
         var p = new StackPanel();
         p.Children.Add(new TextBlock { Text = "Virtuelle Webcam", FontSize = 14, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 8) });
         TextBlock T(string s, Brush? c = null) => new() { Text = s, TextWrapping = TextWrapping.Wrap, Foreground = c ?? B("Text"), Margin = new Thickness(0, 0, 0, 10) };
+        if (VirtualCamera.DesktopCameraAccessDenied)
+        {
+            p.Children.Add(T("Windows sperrt gerade den Kamerazugriff für Desktop-Apps. Einstellungen → Datenschutz und Sicherheit → Kamera: „Kamerazugriff“ und „Desktop-Apps den Zugriff auf die Kamera erlauben“ einschalten.", B("Live")));
+            var open = new Button { Content = "Kamera-Einstellungen öffnen", Style = (Style)Application.Current.Resources["Flat"], Margin = new Thickness(0, 0, 0, 10) };
+            open.Click += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:privacy-webcam") { UseShellExecute = true });
+            p.Children.Add(open);
+        }
         switch (_m.Vcam)
         {
             case VcamState.Ready:
-                p.Children.Add(T($"In Zoom, Teams, OBS, Discord … „{VirtualCamera.DeviceName}“ als Kamera wählen. Apps, die schon offen waren, einmal neu starten."));
+                p.Children.Add(T($"In Zoom, Teams, OBS, Discord, Browser oder der Kamera-App „{VirtualCamera.DisplayName}“ als Kamera wählen. Apps, die schon offen waren, einmal komplett beenden (auch aus dem Infobereich) und neu starten."));
                 var un = new Button { Content = "Entfernen", Style = (Style)Application.Current.Resources["Link"] };
                 un.Click += (_, _) => { _m.UninstallVirtualCamera(); _vcamPopup.IsOpen = false; };
                 p.Children.Add(un);
@@ -184,7 +191,7 @@ public sealed class MainWindow : Window
                 p.Children.Add(T("Einrichten abgebrochen oder fehlgeschlagen. Windows fragt nach Administratorrechten – bitte bestätigen.", B("Live")));
                 goto default;
             default:
-                p.Children.Add(T($"Richtet „{VirtualCamera.DeviceName}“ als Kamera für alle Apps ein. Windows fragt einmal nach Administratorrechten."));
+                p.Children.Add(T($"Richtet „{VirtualCamera.DisplayName}“ als Kamera für alle Apps ein. Windows fragt einmal nach Administratorrechten."));
                 var inst = new Button { Content = "Einrichten", Style = (Style)Application.Current.Resources["Flat"] };
                 inst.Click += (_, _) => { _vcamPopup.IsOpen = false; _m.InstallVirtualCamera(); };
                 p.Children.Add(inst);

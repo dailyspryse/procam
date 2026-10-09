@@ -142,36 +142,11 @@ jobs:
           }
           Restart-Service FrameServer -Force -ErrorAction SilentlyContinue
 
-          # Control: the unmodified reference sample, to tell environment from code.
-          git clone --depth 1 https://github.com/smourier/VCamSample.git ref
-          nuget restore ref/VCamSampleSource/packages.config -PackagesDirectory ref/packages | Out-Null
-          msbuild ref/VCamSampleSource/VCamSampleSource.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:SolutionDir="$PWD\ref\" /m /v:quiet
-          $refDll = (Get-ChildItem -Recurse ref -Filter VCamSampleSource.dll | Select-Object -First 1).FullName
-          New-Item -ItemType Directory -Force "C:\Program Files\VCamRef" | Out-Null
-          Copy-Item $refDll "C:\Program Files\VCamRef\"
-          regsvr32 /s "C:\Program Files\VCamRef\VCamSampleSource.dll"
-          (Get-Content Windows/VirtualCamera/vcamctl.cpp -Raw) -replace '7C1E4F2A-3B5D-4E8F-A6C2-9D0B1E2F3A4B','3CAD447D-F283-4AF4-A3B2-6F5363309F52' | Set-Content refctl.cpp
-          cl /nologo /EHsc /MT refctl.cpp /Fe:refctl.exe | Out-Null
-          $ref = Start-Process -FilePath ./refctl.exe -ArgumentList "run",$PID -PassThru -RedirectStandardOutput ref.txt -NoNewWindow
-          Start-Sleep -Seconds 4
-          Write-Host "--- Original-Beispiel (Sitzung):"; Get-Content ref.txt
-          Stop-Process -Id $ref.Id -ErrorAction SilentlyContinue
-
-          # Diagnose: system-wide vs. per-session camera.
-          & publish/procam_vcamctl.exe install 2>&1 | Write-Host
-          & publish/procam_vcamctl.exe remove 2>&1 | Write-Host
           $setup = Start-Process -FilePath publish/ProCamStudio.exe -ArgumentList "--install-vcam" -WorkingDirectory publish -Wait -PassThru
           Get-Content (Join-Path $env:TEMP "procam-vcam-setup.log")
-          $holder = Start-Process -FilePath publish/procam_vcamctl.exe -ArgumentList "run",$PID -PassThru `
-                      -RedirectStandardOutput session.txt -NoNewWindow
-          Start-Sleep -Seconds 4
-          Write-Host "--- Sitzungs-Kamera:"; Get-Content session.txt
-          $sessionOk = (Get-Content session.txt -Raw) -match "Start: 0x00000000"
-          if ($sessionOk) { Write-Host "Sitzungs-Kamera läuft" }
-          if (-not $sessionOk) {
+          if ($setup.ExitCode -ne 0) {
             # Server SKUs may lack the Frame Server / MFCreateVirtualCamera.
-            Write-Host "::warning::Media-Foundation-Kamera auf diesem Runner nicht einrichtbar (Code $($setup.ExitCode)) - nicht getestet"
-            exit 0
+            throw "Media-Foundation-Kamera nicht einrichtbar (Code $($setup.ExitCode))"
           }
           Get-Service FrameServer, FrameServerMonitor -ErrorAction SilentlyContinue | Format-Table -AutoSize | Out-String | Write-Host
           $app = Start-Process -FilePath publish/ProCamStudio.exe -ArgumentList "--selftest","testdata","--vcam","45" `
@@ -181,7 +156,7 @@ jobs:
           # Grab a frame through Windows' DirectShow bridge; retry while the
           # Frame Server loads the source and Studio opens the section.
           for ($i = 0; $i -lt 4 -and -not (Test-Path mfcam.png); $i++) {
-            & ffmpeg-bin/ffmpeg.exe -hide_banner -y -f dshow -i video="ProCam iPhone" -frames:v 60 -update 1 mfcam.png 2>&1 | Out-String | Write-Host
+            & ffmpeg-bin/ffmpeg.exe -hide_banner -y -f dshow -i video="ProCam iPhone (Windows Virtual Camera)" -frames:v 60 -update 1 mfcam.png 2>&1 | Out-String | Write-Host
             Start-Sleep -Seconds 2
           }
           $app.WaitForExit()
