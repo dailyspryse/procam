@@ -13,6 +13,8 @@ public sealed class App : Application
         // window or WPF resource exists.
         if (args.Length > 0 && args[0] == "--selftest")
             return SelfTest.Run(args);
+        if (args.Length > 0 && args[0] == "--fakephone")
+            return SelfTest.FakePhone(args);
 
         var app = new App();
         app.Resources.MergedDictionaries.Add(new ResourceDictionary
@@ -38,6 +40,9 @@ public sealed class App : Application
         }
 
         var model = new StudioModel(app.Dispatcher);
+        // `--connect <ip>` skips discovery (scripts, shortcuts, CI).
+        int ci = Array.IndexOf(args, "--connect");
+        if (ci >= 0 && ci + 1 < args.Length) model.Connect(args[ci + 1]);
         var window = new MainWindow(model);
         window.Closed += (_, _) => model.Dispose();
         return app.Run(window);

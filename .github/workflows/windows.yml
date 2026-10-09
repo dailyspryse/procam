@@ -104,15 +104,54 @@ jobs:
           if ($app.ExitCode -ne 0) { throw "Selbsttest mit Webcam fehlgeschlagen ($($app.ExitCode))" }
           Start-Process regsvr32.exe -ArgumentList "/u", "/s", "`"$dll`"" -Wait
 
+      - name: UI with a simulated iPhone
+        run: |
+          # Fake phone replays the recorded stream on port 47800; the Studio
+          # connects to it, then the window is captured with PrintWindow
+          # (works even where the window is larger than the runner's screen).
+          $phone = Start-Process -FilePath publish/ProCamStudio.exe -ArgumentList "--fakephone","testdata","45" `
+                     -WorkingDirectory publish -PassThru
+          Start-Sleep -Seconds 2
+          $app = Start-Process -FilePath publish/ProCamStudio.exe -ArgumentList "--connect","127.0.0.1" `
+                   -WorkingDirectory publish -PassThru
+          Start-Sleep -Seconds 18
+          if ($app.HasExited) { throw "App hat sich beendet (Code $($app.ExitCode))" }
+          $app.Refresh()
+          Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
+          using System; using System.Drawing; using System.Runtime.InteropServices;
+          public static class Shot {
+            [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+            [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+            public static void Save(IntPtr h, string path) {
+              RECT r; GetWindowRect(h, out r);
+              using (var bmp = new Bitmap(r.R - r.L, r.B - r.T)) {
+                using (var g = Graphics.FromImage(bmp)) { var dc = g.GetHdc(); PrintWindow(h, dc, 2); g.ReleaseHdc(dc); }
+                bmp.Save(path);
+              }
+            }
+          }
+          '@
+          [Shot]::Save($app.MainWindowHandle, (Join-Path $PWD "ui.png"))
+          Stop-Process -Id $app.Id
+          $phone.WaitForExit()
+          $log = Get-Content publish/fakephone-commands.txt -Raw
+          Write-Host $log.Substring(0, [Math]::Min(1500, $log.Length))
+          $errs = Join-Path $env:APPDATA "ProCam/errors.log"
+          if (Test-Path $errs) { Get-Content $errs; throw "errors.log ist nicht leer" }
+          if ($log -notmatch '"apply"') { throw "Studio hat keine Einstellungen an das Test-iPhone geschickt" }
+
       - uses: actions/upload-artifact@v4
         with:
-          name: vcam-frame
-          path: vcam.png
+          name: screenshots
+          path: |
+            vcam.png
+            ui.png
         if: always()
 
       - name: Package
         run: |
-          Remove-Item -Recurse -Force publish/testdata, publish/selftest-report.txt -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force publish/testdata, publish/selftest-report.txt, publish/fakephone-commands.txt -ErrorAction SilentlyContinue
           Compress-Archive -Path publish/* -DestinationPath ProCamStudio-Windows.zip
 
       - uses: actions/upload-artifact@v4

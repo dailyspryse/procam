@@ -211,4 +211,67 @@ public static class SelfTest
         Line($"  {sent} Frames gesendet, Empfänger verbunden: {watched}");
         Check(watched, "eine App hat die Webcam geöffnet");
     }
+
+    // ─── Fake phone ─────────────────────────────────────────────────────
+
+    /// `--fakephone <testdata> <seconds>`: behaves like the iPhone app on
+    /// port 47800 — hello, status 5×/s, the recorded video in a loop — and
+    /// logs every command the Studio sends to fakephone-commands.txt.
+    public static int FakePhone(string[] args)
+    {
+        string dir = args.Length > 1 ? args[1] : "testdata";
+        int seconds = args.Length > 2 && int.TryParse(args[2], out var s) ? s : 60;
+        var stream = ReadStream(Path.Combine(dir, "hevc.procam"));
+        var format = stream.First(m => m.Type == MessageType.VideoFormat);
+        var frames = stream.Where(m => m.Type == MessageType.VideoFrame).ToList();
+        var status = File.ReadAllBytes(Path.Combine(dir, "status.json"));
+        var log = new StringBuilder();
+
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Any, Wire.DefaultPort);
+        listener.Start();
+        var deadline = DateTime.UtcNow.AddSeconds(seconds);
+        try
+        {
+            while (DateTime.UtcNow < deadline)
+            {
+                if (!listener.Pending()) { System.Threading.Thread.Sleep(50); continue; }
+                using var client = listener.AcceptTcpClient();
+                client.NoDelay = true;
+                var ns = client.GetStream();
+                log.AppendLine("Studio verbunden");
+                var parser = new MessageParser();
+                var buf = new byte[1 << 16];
+                void Send(byte[] m) => ns.Write(m, 0, m.Length);
+                Send(Wire.EncodeJson(MessageType.Hello, new Hello { Role = "iphone", Name = "Test-iPhone" }));
+                Send(Wire.Encode(MessageType.VideoFormat, format.Payload));
+                int i = 0;
+                var sw = Stopwatch.StartNew();
+                while (client.Connected && DateTime.UtcNow < deadline)
+                {
+                    // Frames loop; keyframe only at index 0, so restart there.
+                    var f = frames[i % frames.Count];
+                    var payload = (byte[])f.Payload.Clone();
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(payload, (ulong)(sw.Elapsed.TotalMilliseconds * 1000));
+                    Send(Wire.Encode(MessageType.VideoFrame, payload));
+                    if (i % 6 == 0) Send(Wire.Encode(MessageType.Status, status));
+                    i++;
+                    while (ns.DataAvailable)
+                    {
+                        int n = ns.Read(buf, 0, buf.Length);
+                        foreach (var m in parser.Feed(buf.AsSpan(0, n)))
+                            if (m.Type == MessageType.Command)
+                                log.AppendLine(Encoding.UTF8.GetString(m.Payload));
+                    }
+                    System.Threading.Thread.Sleep(33);
+                }
+            }
+        }
+        catch (Exception e) { log.AppendLine("Fehler: " + e.Message); }
+        finally
+        {
+            listener.Stop();
+            File.WriteAllText("fakephone-commands.txt", log.ToString());
+        }
+        return 0;
+    }
 }
