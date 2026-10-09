@@ -1,0 +1,120 @@
+name: Windows Studio
+
+on:
+  push:
+    paths:
+      - "Windows/**"
+      - ".github/workflows/windows.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - uses: microsoft/setup-msbuild@v2
+
+      # ── Virtual camera: softcam, renamed so it shows up as "ProCam iPhone"
+      #    and never collides with another softcam-based app.
+      - name: Build virtual camera (softcam)
+        run: |
+          git clone --depth 1 --branch v1.8.1 https://github.com/tshino/softcam.git softcam
+          $cpp = "softcam/src/softcam/softcam.cpp"
+          (Get-Content $cpp -Raw) `
+            -replace 'L"DirectShow Softcam"', 'L"ProCam iPhone"' `
+            -replace '0xaef3b972, 0x5fa5, 0x4647, 0x95, 0x71, 0x35, 0x8e, 0xb4, 0x72, 0xbc, 0x9e', '0x5b0e1d52, 0x8c7a, 0x4e2b, 0x9f, 0x3d, 0x7a, 0x61, 0xc2, 0xb8, 0x4e, 0x19' `
+            | Set-Content $cpp
+          $fb = "softcam/src/softcamcore/FrameBuffer.cpp"
+          (Get-Content $fb -Raw) -replace '"DirectShow Softcam/', '"ProCam iPhone/' | Set-Content $fb
+          Select-String -Path $cpp -Pattern 'ProCam iPhone','0x5b0e1d52' | ForEach-Object { $_.Line }
+          if ((Select-String -Path $cpp -Pattern '0x5b0e1d52').Count -eq 0) { throw "GUID-Patch fehlgeschlagen" }
+          msbuild softcam/softcam.sln /t:softcam /p:Configuration=Release /p:Platform=x64 /m /v:minimal
+          Get-ChildItem softcam/dist/bin/x64
+
+      - name: Fetch FFmpeg 9.0 (LGPL, shared)
+        run: |
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip"
+          Invoke-WebRequest $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dl
+          $bin = (Get-ChildItem ffmpeg-dl -Recurse -Directory -Filter bin | Select-Object -First 1).FullName
+          New-Item -ItemType Directory -Force ffmpeg-bin | Out-Null
+          Copy-Item "$bin/*" ffmpeg-bin/
+          Get-ChildItem ffmpeg-bin
+
+      - name: Build ProCam Studio
+        run: |
+          dotnet publish Windows/ProCamStudio/ProCamStudio.csproj -c Release -o publish
+          New-Item -ItemType Directory -Force publish/ffmpeg | Out-Null
+          Copy-Item ffmpeg-bin/*.dll publish/ffmpeg/
+          Copy-Item softcam/dist/bin/x64/softcam.dll publish/procam_vcam.dll
+          Copy-Item Windows/README-Windows.txt publish/LIESMICH.txt
+
+      - name: Self-test (protocol + decoding)
+        run: |
+          Copy-Item -Recurse Windows/testdata publish/testdata
+          $p = Start-Process -FilePath publish/ProCamStudio.exe -ArgumentList "--selftest","testdata" `
+                 -WorkingDirectory publish -Wait -PassThru
+          Get-Content publish/selftest-report.txt
+          if ($p.ExitCode -ne 0) { throw "Selbsttest fehlgeschlagen ($($p.ExitCode))" }
+
+      - name: Virtual camera end-to-end
+        run: |
+          $dll = (Resolve-Path publish/procam_vcam.dll).Path
+          $r = Start-Process regsvr32.exe -ArgumentList "/s", "`"$dll`"" -Wait -PassThru
+          if ($r.ExitCode -ne 0) { throw "regsvr32 fehlgeschlagen ($($r.ExitCode))" }
+
+          # Feed the camera for 40 s from the app, grab frames with ffmpeg via DirectShow.
+          $app = Start-Process -FilePath publish/ProCamStudio.exe -ArgumentList "--selftest","testdata","--vcam","40" `
+                   -WorkingDirectory publish -PassThru
+          Start-Sleep -Seconds 8
+          & ffmpeg-bin/ffmpeg.exe -hide_banner -list_devices true -f dshow -i dummy 2>&1 | Out-String | Write-Host
+          & ffmpeg-bin/ffmpeg.exe -hide_banner -y -f dshow -i video="ProCam iPhone" -frames:v 30 -update 1 vcam.png 2>&1 | Out-String | Write-Host
+          $app.WaitForExit()
+          Get-Content publish/selftest-report.txt
+          if (-not (Test-Path vcam.png)) { throw "Kein Bild von der virtuellen Kamera erhalten" }
+
+          Add-Type -AssemblyName System.Drawing
+          $img = [System.Drawing.Bitmap]::FromFile((Resolve-Path vcam.png).Path)
+          Write-Host "Webcam-Bild: $($img.Width)x$($img.Height)"
+          $checks = @(
+            @{ n = "rot";  x = 480;  y = 270; r = 220; g = 30;  b = 30 },
+            @{ n = "grün"; x = 1440; y = 270; r = 30;  g = 200; b = 30 },
+            @{ n = "blau"; x = 480;  y = 810; r = 30;  g = 40;  b = 220 },
+            @{ n = "grau"; x = 1440; y = 810; r = 128; g = 128; b = 128 }
+          )
+          $bad = 0
+          foreach ($c in $checks) {
+            $px = $img.GetPixel($c.x, $c.y)
+            $d = [Math]::Max([Math]::Abs($px.R - $c.r), [Math]::Max([Math]::Abs($px.G - $c.g), [Math]::Abs($px.B - $c.b)))
+            Write-Host ("{0}: RGB({1},{2},{3}) Abweichung {4}" -f $c.n, $px.R, $px.G, $px.B, $d)
+            if ($d -gt 30) { $bad++ }
+          }
+          $img.Dispose()
+          if ($img.Width -ne 1920 -or $img.Height -ne 1080) { throw "Falsche Größe" }
+          if ($bad -gt 0) { throw "$bad Farben falsch – Bild verdreht oder verfälscht?" }
+          if ($app.ExitCode -ne 0) { throw "Selbsttest mit Webcam fehlgeschlagen ($($app.ExitCode))" }
+          Start-Process regsvr32.exe -ArgumentList "/u", "/s", "`"$dll`"" -Wait
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vcam-frame
+          path: vcam.png
+        if: always()
+
+      - name: Package
+        run: |
+          Remove-Item -Recurse -Force publish/testdata, publish/selftest-report.txt -ErrorAction SilentlyContinue
+          Compress-Archive -Path publish/* -DestinationPath ProCamStudio-Windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProCamStudio-Windows
+          path: ProCamStudio-Windows.zip

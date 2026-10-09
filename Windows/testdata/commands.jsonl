@@ -1,0 +1,6 @@
+{"apply":{"_0":{"zoom":1,"height":1080,"codec":"hevc","temperature":5600,"tint":0,"lensID":"com.apple.avfoundation.avcapturedevice.built-in_video:0","appleLog":false,"width":1920,"lensPosition":0.5,"shutter":0.02,"torch":0,"exposureMode":"auto","iso":100,"grade":{"temperature":0,"lift":{"b":-0.02,"g":0,"r":0.01},"vibrance":0,"shadows":0,"tint":0,"blackPoint":0,"vignette":0,"lutIntensity":1,"gain":{"b":1,"g":1,"r":1},"saturation":1,"contrast":1,"lutEnabled":true,"sharpen":0,"highlights":0,"exposure":0,"gamma":{"b":1,"g":1,"r":1},"logToRec709":true},"backgroundBlur":false,"backgroundBlurAmount":0.6,"hdr":false,"rotation":0,"exposureBias":0,"whiteBalanceMode":"auto","focusMode":"auto","stabilization":false,"mirror":false,"fps":30,"bitrateMbps":12}}}
+{"focusAt":{"y":0.75,"x":0.25}}
+{"loadLUT":{"name":"a.cube","cube":"LUT_3D_SIZE 2"}}
+{"clearLUT":{}}
+{"requestKeyframe":{}}
+{"exposeAt":{"y":0.5,"x":0.5}}

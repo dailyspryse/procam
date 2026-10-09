@@ -48,6 +48,15 @@ struct StatusView: View {
                         .padding(.horizontal, 40)
                 }
 
+                if c.clientName == nil, let ip = LocalAddress.wifiIPv4() {
+                    // For Windows PCs on networks where automatic discovery
+                    // is blocked: type this into "Direkt per IP".
+                    Text("IP-Adresse: \(ip)")
+                        .font(.callout.monospacedDigit().weight(.medium))
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(.white.opacity(0.08), in: Capsule())
+                }
+
                 if c.clientName != nil {
                     HStack(spacing: 22) {
                         stat("Format", c.formatLabel)
@@ -99,5 +108,25 @@ struct StatusView: View {
             Text(title.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             Text(value).font(.footnote.monospacedDigit().weight(.medium))
         }
+    }
+}
+
+enum LocalAddress {
+    /// IPv4 address of the Wi-Fi interface (en0), if any.
+    static func wifiIPv4() -> String? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let ifa = ptr.pointee
+            guard let addr = ifa.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET),
+                  String(cString: ifa.ifa_name) == "en0" else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count),
+                           nil, 0, NI_NUMERICHOST) == 0 {
+                return String(cString: host)
+            }
+        }
+        return nil
     }
 }

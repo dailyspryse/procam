@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Runs the Windows app's protocol + decoder self-test on macOS against
+       Homebrew FFmpeg, for fast checks before CI. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>ProCam</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../ProCamStudio/Protocol.cs;../ProCamStudio/VideoDecoder.cs;../ProCamStudio/Scopes.cs;../ProCamStudio/CubeLut.cs;../ProCamStudio/VirtualCamera.cs;../ProCamStudio/SelfTest.cs" />
+    <PackageReference Include="FFmpeg.AutoGen" Version="9.0.1.1" />
+    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
+  </ItemGroup>
+</Project>
