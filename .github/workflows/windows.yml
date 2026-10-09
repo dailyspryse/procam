@@ -131,6 +131,32 @@ jobs:
             if ($s) { Set-Service $svc -StartupType Manual; Start-Service $svc -ErrorAction SilentlyContinue }
           }
           Get-Service FrameServer, FrameServerMonitor -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType -AutoSize | Out-String | Write-Host
+          # Camera privacy ("let desktop apps access your camera") is off on
+          # server images; Start() then fails with access denied.
+          foreach ($root in "HKLM:", "HKCU:") {
+            $k = "$root\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam"
+            New-Item -Path $k -Force | Out-Null
+            Set-ItemProperty -Path $k -Name Value -Value Allow
+            New-Item -Path "$k\NonPackaged" -Force | Out-Null
+            Set-ItemProperty -Path "$k\NonPackaged" -Name Value -Value Allow
+          }
+          Restart-Service FrameServer -Force -ErrorAction SilentlyContinue
+
+          # Control: the unmodified reference sample, to tell environment from code.
+          git clone --depth 1 https://github.com/smourier/VCamSample.git ref
+          nuget restore ref/VCamSampleSource/packages.config -PackagesDirectory ref/packages | Out-Null
+          msbuild ref/VCamSampleSource/VCamSampleSource.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:SolutionDir="$PWD\ref\" /m /v:quiet
+          $refDll = (Get-ChildItem -Recurse ref -Filter VCamSampleSource.dll | Select-Object -First 1).FullName
+          New-Item -ItemType Directory -Force "C:\Program Files\VCamRef" | Out-Null
+          Copy-Item $refDll "C:\Program Files\VCamRef\"
+          regsvr32 /s "C:\Program Files\VCamRef\VCamSampleSource.dll"
+          (Get-Content Windows/VirtualCamera/vcamctl.cpp -Raw) -replace '7C1E4F2A-3B5D-4E8F-A6C2-9D0B1E2F3A4B','3CAD447D-F283-4AF4-A3B2-6F5363309F52' | Set-Content refctl.cpp
+          cl /nologo /EHsc /MT refctl.cpp /Fe:refctl.exe | Out-Null
+          $ref = Start-Process -FilePath ./refctl.exe -ArgumentList "run",$PID -PassThru -RedirectStandardOutput ref.txt -NoNewWindow
+          Start-Sleep -Seconds 4
+          Write-Host "--- Original-Beispiel (Sitzung):"; Get-Content ref.txt
+          Stop-Process -Id $ref.Id -ErrorAction SilentlyContinue
+
           # Diagnose: system-wide vs. per-session camera.
           & publish/procam_vcamctl.exe install 2>&1 | Write-Host
           & publish/procam_vcamctl.exe remove 2>&1 | Write-Host
