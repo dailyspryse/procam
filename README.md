@@ -52,3 +52,10 @@ WPF-App (C#), gleiches Protokoll. FFmpeg 9.0 (LGPL) dekodiert, softcam (DirectSh
 - Lokal kompilieren: `~/.dotnet/dotnet build Windows/ProCamStudio -c Release`; Tests ohne Windows:
   `cd Windows/LocalTest && ~/.dotnet/dotnet run -c Release` (nutzt Homebrew-FFmpeg 9 → AutoGen-Version muss passen).
 - Testdaten neu erzeugen: `tools/testvector` (siehe Dateikopf).
+- **Windows 11 = Media-Foundation-Kamera** (`Windows/VirtualCamera`, Basis VCamSample/MIT): Media Source läuft im
+  Frame-Server-Dienst und liest Frames aus `Global\ProCamVirtualCamera` (Layout in FrameGenerator.cpp ↔ MfFrameWriter).
+  Nur Dienste dürfen Global-Objekte anlegen → die Source legt an, Studio öffnet. Einrichten (UAC): DLL nach
+  Program Files kopieren (Dienste + AppContainer brauchen Lesezugriff), regsvr32, `procam_vcamctl install` (systemweit).
+  Name in Apps: „ProCam iPhone (Windows Virtual Camera)“. Windows 10 → softcam (DirectShow).
+- **Falle:** `IMFVirtualCamera::Start` → 0x80070005, wenn Kamera-Datenschutz für Desktop-Apps aus ist
+  (ConsentStore\webcam = Deny). Studio warnt davor; CI schaltet es ein.
