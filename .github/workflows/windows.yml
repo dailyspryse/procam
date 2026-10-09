@@ -39,6 +39,20 @@ jobs:
           msbuild softcam/softcam.sln /t:softcam /p:Configuration=Release /p:Platform=x64 /m /v:minimal
           Get-ChildItem softcam/dist/bin/x64
 
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build Media Foundation camera (Windows 11)
+        run: |
+          nuget restore Windows/VirtualCamera/Source/packages.config -PackagesDirectory Windows/VirtualCamera/packages
+          msbuild Windows/VirtualCamera/Source/VCamSampleSource.vcxproj /p:Configuration=Release /p:Platform=x64 `
+            /p:PlatformToolset=v143 /p:SolutionDir="$PWD\Windows\VirtualCamera\" /m /v:minimal
+          $dll = Get-ChildItem -Recurse Windows/VirtualCamera -Filter VCamSampleSource.dll | Select-Object -First 1
+          if (-not $dll) { throw "Media Source nicht gebaut" }
+          New-Item -ItemType Directory -Force mfcam | Out-Null
+          Copy-Item $dll.FullName mfcam/procam_mfcam.dll
+          cl /nologo /EHsc /MT /O2 Windows/VirtualCamera/vcamctl.cpp /Fe:mfcam/procam_vcamctl.exe
+          dumpbin /dependents mfcam/procam_mfcam.dll | Select-String "\.dll"
+
       - name: Fetch FFmpeg 9.0 (LGPL, shared)
         run: |
           $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip"
@@ -55,6 +69,7 @@ jobs:
           New-Item -ItemType Directory -Force publish/ffmpeg | Out-Null
           Copy-Item ffmpeg-bin/*.dll publish/ffmpeg/
           Copy-Item softcam/dist/bin/x64/softcam.dll publish/procam_vcam.dll
+          Copy-Item mfcam/* publish/
           Copy-Item Windows/README-Windows.txt publish/LIESMICH.txt
 
       - name: Self-test (protocol + decoding)
@@ -65,7 +80,9 @@ jobs:
           Get-Content publish/selftest-report.txt
           if ($p.ExitCode -ne 0) { throw "Selbsttest fehlgeschlagen ($($p.ExitCode))" }
 
-      - name: Virtual camera end-to-end
+      - name: Virtual camera end-to-end (DirectShow, Windows 10 path)
+        env:
+          PROCAM_VCAM: dshow
         run: |
           $dll = (Resolve-Path publish/procam_vcam.dll).Path
           $r = Start-Process regsvr32.exe -ArgumentList "/s", "`"$dll`"" -Wait -PassThru
@@ -103,6 +120,40 @@ jobs:
           if ($bad -gt 0) { throw "$bad Farben falsch – Bild verdreht oder verfälscht?" }
           if ($app.ExitCode -ne 0) { throw "Selbsttest mit Webcam fehlgeschlagen ($($app.ExitCode))" }
           Start-Process regsvr32.exe -ArgumentList "/u", "/s", "`"$dll`"" -Wait
+
+      - name: Virtual camera end-to-end (Media Foundation, Windows 11 path)
+        env:
+          PROCAM_VCAM: mf
+        run: |
+          $setup = Start-Process -FilePath publish/ProCamStudio.exe -ArgumentList "--install-vcam" -WorkingDirectory publish -Wait -PassThru
+          Get-Content (Join-Path $env:TEMP "procam-vcam-setup.log")
+          if ($setup.ExitCode -ne 0) {
+            # Server SKUs may lack the Frame Server / MFCreateVirtualCamera.
+            Write-Host "::warning::Media-Foundation-Kamera auf diesem Runner nicht einrichtbar (Code $($setup.ExitCode)) - nicht getestet"
+            exit 0
+          }
+          Get-Service FrameServer, FrameServerMonitor -ErrorAction SilentlyContinue | Format-Table -AutoSize | Out-String | Write-Host
+          $app = Start-Process -FilePath publish/ProCamStudio.exe -ArgumentList "--selftest","testdata","--vcam","45" `
+                   -WorkingDirectory publish -PassThru
+          Start-Sleep -Seconds 6
+          & ffmpeg-bin/ffmpeg.exe -hide_banner -list_devices true -f dshow -i dummy 2>&1 | Out-String | Write-Host
+          # Grab a frame through Windows' DirectShow bridge; retry while the
+          # Frame Server loads the source and Studio opens the section.
+          for ($i = 0; $i -lt 4 -and -not (Test-Path mfcam.png); $i++) {
+            & ffmpeg-bin/ffmpeg.exe -hide_banner -y -f dshow -i video="ProCam iPhone" -frames:v 60 -update 1 mfcam.png 2>&1 | Out-String | Write-Host
+            Start-Sleep -Seconds 2
+          }
+          $app.WaitForExit()
+          Get-Content publish/selftest-report.txt
+          if (-not (Test-Path mfcam.png)) { throw "Kein Bild von der Media-Foundation-Kamera" }
+          Add-Type -AssemblyName System.Drawing
+          $img = [System.Drawing.Bitmap]::FromFile((Resolve-Path mfcam.png).Path)
+          $w = $img.Width; $h = $img.Height
+          $px = $img.GetPixel([int]($w / 4), [int]($h / 4)); $px2 = $img.GetPixel([int]($w * 3 / 4), [int]($h * 3 / 4))
+          $img.Dispose()
+          Write-Host "MF-Kamera: ${w}x${h}, oben links RGB($($px.R),$($px.G),$($px.B)), unten rechts RGB($($px2.R),$($px2.G),$($px2.B))"
+          if ($px.R -lt 180 -or $px.G -gt 70 -or $px2.R -lt 100 -or $px2.R -gt 160) { throw "Farben falsch - Platzhalter statt iPhone-Bild?" }
+          Start-Process -FilePath publish/ProCamStudio.exe -ArgumentList "--uninstall-vcam" -WorkingDirectory publish -Wait
 
       - name: UI with a simulated iPhone
         # Windows PowerShell 5.1: its .NET Framework has System.Drawing built in.
@@ -148,6 +199,7 @@ jobs:
           name: screenshots
           path: |
             vcam.png
+            mfcam.png
             ui.png
         if: always()
 

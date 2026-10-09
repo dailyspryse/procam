@@ -27,8 +27,9 @@ public sealed unsafe class VideoDecoder : IDisposable
     public event Action<DecodedFrame>? FrameDecoded;
     public event Action? NeedKeyframe;
 
-    /// Called with each frame as BGR24 1920×1080 top-down, letterboxed —
-    /// exactly what softcam wants. Only produced while set.
+    /// Called with each frame as 1920×1080 top-down, letterboxed: BGRA for
+    /// the Media Foundation camera, BGR24 for softcam (see
+    /// VirtualCamera.WantsBgra). Only produced while set.
     public Action<byte[]>? VirtualCameraSink;
 
     private AVCodecContext* _ctx;
@@ -42,7 +43,14 @@ public sealed unsafe class VideoDecoder : IDisposable
 
     private readonly DecodedFrame[] _ring = { new(), new(), new(), new() };
     private int _ringIndex;
-    private readonly byte[] _vcam = new byte[VirtualCamera.Width * VirtualCamera.Height * 3];
+    private readonly bool _vcamBgra;
+    private readonly byte[] _vcam;
+
+    public VideoDecoder(bool? virtualCameraBgra = null)
+    {
+        _vcamBgra = virtualCameraBgra ?? VirtualCamera.WantsBgra;
+        _vcam = new byte[VirtualCamera.Width * VirtualCamera.Height * (_vcamBgra ? 4 : 3)];
+    }
 
     public static bool Initialized { get; private set; }
 
@@ -202,19 +210,25 @@ public sealed unsafe class VideoDecoder : IDisposable
     private void ScaleToVirtualCamera(int w, int h)
     {
         int vw = VirtualCamera.Width, vh = VirtualCamera.Height;
+        int bpp = _vcamBgra ? 4 : 3;
         // Letterbox: fit inside 1920×1080, keep the aspect, centre, black bars.
         double s = Math.Min((double)vw / w, (double)vh / h);
         int tw = Math.Max(2, (int)(w * s) & ~1), th = Math.Max(2, (int)(h * s) & ~1);
         int ox = (vw - tw) / 2, oy = (vh - th) / 2;
-        if (tw != vw || th != vh) Array.Clear(_vcam);
+        if (tw != vw || th != vh)
+        {
+            Array.Clear(_vcam);
+            if (_vcamBgra) for (int i = 3; i < _vcam.Length; i += 4) _vcam[i] = 255;
+        }
 
         _swsVcam = ffmpeg.sws_getCachedContext(_swsVcam, w, h, (AVPixelFormat)_frame->format,
-            tw, th, AVPixelFormat.AV_PIX_FMT_BGR24, (int)SwsFlags.SWS_BILINEAR, null, null, null);
+            tw, th, _vcamBgra ? AVPixelFormat.AV_PIX_FMT_BGRA : AVPixelFormat.AV_PIX_FMT_BGR24,
+            (int)SwsFlags.SWS_BILINEAR, null, null, null);
         SetColorspace(_swsVcam);
         fixed (byte* dst = _vcam)
         {
-            var dstData = new byte*[] { dst + (oy * vw + ox) * 3, null, null, null };
-            var dstStride = new[] { vw * 3, 0, 0, 0 };
+            var dstData = new byte*[] { dst + (oy * vw + ox) * bpp, null, null, null };
+            var dstStride = new[] { vw * bpp, 0, 0, 0 };
             ffmpeg.sws_scale(_swsVcam, _frame->data, _frame->linesize, 0, h, dstData, dstStride);
         }
     }

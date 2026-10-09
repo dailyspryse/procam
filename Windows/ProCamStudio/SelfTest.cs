@@ -133,7 +133,7 @@ public static class SelfTest
         int sent = messages.Count(m => m.Type == MessageType.VideoFrame);
         Check(messages.Count > 0 && messages[0].Type == MessageType.VideoFormat, $"{sent} Frames im Protokoll gelesen");
 
-        using var dec = new VideoDecoder();
+        using var dec = new VideoDecoder(virtualCameraBgra: false);
         int decoded = 0, keyRequests = 0;
         DecodedFrame? last = null;
         byte[]? vcam = null;
@@ -189,6 +189,7 @@ public static class SelfTest
 
         // Decode the test stream once and loop its frames into the camera.
         var frames = new List<byte[]>();
+        Line($"  Modus: {(VirtualCamera.UseMediaFoundation ? "Media Foundation (Windows 11)" : "DirectShow")}");
         using (var dec = new VideoDecoder())
         {
             dec.VirtualCameraSink = b => frames.Add((byte[])b.Clone());

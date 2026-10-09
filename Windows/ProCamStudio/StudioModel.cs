@@ -392,7 +392,8 @@ public sealed class StudioModel : IDisposable
         while (true)
         {
             await Task.Delay(500);
-            if (Vcam != VcamState.Ready) continue;
+            // The MF media source draws its own placeholder when frames stop.
+            if (Vcam != VcamState.Ready || VirtualCamera.UseMediaFoundation) continue;
             bool streaming;
             lock (_frameGate) streaming = _latest != null && LinkState == LinkState.Connected;
             if (!streaming || ReceivedFps < 1) _vcam.Send(card);

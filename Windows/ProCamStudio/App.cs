@@ -15,6 +15,15 @@ public sealed class App : Application
             return SelfTest.Run(args);
         if (args.Length > 0 && args[0] == "--fakephone")
             return SelfTest.FakePhone(args);
+        // Elevated helpers started by VirtualCamera.Register (UAC).
+        if (args.Length > 0 && (args[0] == "--install-vcam" || args[0] == "--uninstall-vcam"))
+        {
+            var log = new StringWriter();
+            int code = args[0] == "--install-vcam" ? VirtualCamera.InstallMf(log) : VirtualCamera.UninstallMf(log);
+            try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "procam-vcam-setup.log"), log.ToString()); } catch { }
+            Console.Write(log.ToString());
+            return code;
+        }
 
         var app = new App();
         app.Resources.MergedDictionaries.Add(new ResourceDictionary

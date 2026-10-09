@@ -6,3 +6,4 @@ xcuserdata/
 Windows/**/bin/
 Windows/**/obj/
 selftest-report.txt
+Windows/VirtualCamera/packages/
