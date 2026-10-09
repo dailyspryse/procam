@@ -41,4 +41,14 @@ Regler über ihre Grenzen; meldet Abstürze, abgelehnte Werte und Stufen ohne Bi
 ## Stand (08.10.2026)
 Getestet: Verbindung, Live-Bild 1080p30 HEVC, Objektiverkennung, Automatik-Werte, Scopes.
 Stresstest grün (306 Schritte, inkl. Apple Log, Blur, alle Regler). Noch nicht getestet: virtuelle Kamera (Freigabe nötig), LUT-Datei.
-Offen: USB-Verbindung, Ton (virtuelles Mikrofon), Windows-Version.
+Offen: USB-Verbindung, Ton (virtuelles Mikrofon).
+
+## Windows (`Windows/`)
+WPF-App (C#), gleiches Protokoll. FFmpeg 9.0 (LGPL) dekodiert, softcam (DirectShow) liefert die Webcam
+„ProCam iPhone“ – in CI mit eigenem Namen/CLSID gepatcht (`{5B0E1D52-…}`, muss zu `VirtualCamera.Clsid` passen).
+- Repo: github.com/dailyspryse/procam (privat), CI `.github/workflows/windows.yml` baut + testet auf windows-latest:
+  Selbsttest (Protokoll gegen Swift-JSON, Dekodieren mit Farbprüfung), Webcam end-to-end (ffmpeg dshow greift Bild ab),
+  UI mit Test-iPhone (`--fakephone`) + Screenshot. Releases: `gh release create`.
+- Lokal kompilieren: `~/.dotnet/dotnet build Windows/ProCamStudio -c Release`; Tests ohne Windows:
+  `cd Windows/LocalTest && ~/.dotnet/dotnet run -c Release` (nutzt Homebrew-FFmpeg 9 → AutoGen-Version muss passen).
+- Testdaten neu erzeugen: `tools/testvector` (siehe Dateikopf).
